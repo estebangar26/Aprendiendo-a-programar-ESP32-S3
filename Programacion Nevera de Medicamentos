@@ -1,0 +1,60 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Pines I2C para la pantalla OLED
+const int I2C_SDA = 8;
+const int I2C_SCL = 9;
+
+const int PIN_PUERTA = 15;
+const int PIN_SENSOR = 7;
+
+// Configuración de pantalla OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+void setup() {
+  pinMode(PIN_PUERTA, INPUT);
+  pinMode(PIN_SENSOR, INPUT);
+  Wire.begin(I2C_SDA, I2C_SCL);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+ 
+  display.print("Iniciando");
+  display.display();
+  delay(1000);
+}
+
+void loop() {
+  int lecturaADC = analogRead(PIN_SENSOR);
+  float voltajeSensor = lecturaADC*3.3/4095.0;
+  float temperatura=(voltajeSensor-0.8)/0.05;
+  int estadoPuerta=digitalRead(PIN_PUERTA);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  //Primera fila
+  display.setCursor(0, 0);
+  display.print("Temp: ");
+  display.print(temperatura, 1);
+  display.print(" C");
+
+  //tercera fila
+  display.setCursor(0, 24);
+  if (estadoPuerta){
+    display.print("Puerta Abierta");
+   }
+   else{
+    display.print("Puerta Cerrada");
+   
+   }
+  display.display();
+  delay(1000);
+
+}
