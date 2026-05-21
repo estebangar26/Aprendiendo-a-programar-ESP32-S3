@@ -1,0 +1,196 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Pines I2C para la pantalla OLED
+const int I2C_SDA = 8;
+const int I2C_SCL = 9;
+
+const int PIN_PUERTA = 15;
+const int PIN_SENSOR = 7;
+
+
+const int PIN_INC = 6;
+const int PIN_DEC = 5;
+
+//const float SETPOINT= 4.0;
+float SETPOINT = 4.0;
+
+unsigned long tiempoAnterior = 0;  //Una nueva avriable para manejar lo del tiempo anterior porques e va a utilizar la funcion millis()
+const unsigned long INTERVALO_ACTUALIZACION = 1000; //Intervalo de actualizacion de segundo
+
+
+//Variables para antirrebote
+const unsigned long TIEMPO_ANTIRREBOTE = 200;  //***200 ms
+unsigned long ultimoTiempoInc = 0;             //***calculo de tiempos antirrebote
+unsigned long ultimoTiempoDec = 0;             //***calculo de tiempos antirrebote
+
+volatile bool banderaInc = false;              //***variables adentro de las interrupciones.Varibles que pueden cambiar dentro de las interrupciones=volatiles.
+volatile bool banderaDec = false;              //***variables adentro de las interrupciones.Varibles que pueden cambiar dentro de las interrupciones=volatiles.
+
+float temperaturaActual = 4.0; //Variable global para que la funcion no tenga parametros
+int estadoPuertaActual = 1;//Inicialmente puerta abierta
+
+
+
+// Configuración de pantalla OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
+//Funciones de bajo nivel, antes que las funciones propias.
+void IRAM_ATTR interrupcionIncrementar(){ //Cambian el estado de la bandera
+  banderaInc = true; ////Funciones de interrupcion
+}
+
+void IRAM_ATTR interrupcionDecrementar(){ //Cambian el estadod e la bandera
+  banderaDec = true;   //Funciones de interrupcion
+}
+//Las funiones siempre las coloco antes del setup
+
+
+//Funciones secundarias
+float convertirADCAVoltaje(int lecturaADC){
+  float voltaje = lecturaADC*3.3/4095.0;
+  return voltaje;
+}
+
+float convertirATemperatura(float volt){
+  float temp=(volt-0.8)/0.05;
+  return temp;
+}
+
+//Ahora vamos hacer una funcion que resuma los 3 pasos para obtener la temperatura
+//Funcion principal qu depende de las dos anteriores
+float leerTemperatura(){
+  int lecturaADC = analogRead(PIN_SENSOR);
+  float voltajeSensor = convertirADCAVoltaje(lecturaADC);
+  float temperatura = convertirATemperatura(voltajeSensor);
+  return temperatura;
+}
+
+//Funcion que actualiza la pantalla sin parametros, no devuelve datos, pero ejecuta acciones
+void actualizarPantalla(){
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  //Primera fila
+  display.setCursor(0, 0);
+  display.print("Temp: ");
+  display.print(temperaturaActual, 1);
+  display.print(" C");
+  //Segunda fila
+  display.setCursor(0,12);
+  display.print("Setpoint: ");
+  display.print(SETPOINT,1);
+  display.print("C");
+  
+  //tercera fila
+  display.setCursor(0, 24);
+  if (estadoPuertaActual){
+    display.print("Puerta Abierta");
+   }
+   else{
+    display.print("Puerta Cerrada");
+   
+   }
+  display.display();
+}
+void atenderBotones(){
+  unsigned long tiempoActual  = millis(); //numero de 32 bits =unsigned long //Tiempo que ha transcurrido desde que prendieron el microcontrolador
+  if (banderaInc){
+    banderaInc = false;
+    if(tiempoActual - ultimoTiempoInc >= TIEMPO_ANTIRREBOTE){ //Si ocurre la interrupcion y el tiempo actual - el tiempo del incremento es mayor a 200 ms, quiere decir que pasaron los rebotes de los pines, se aumenta seatpoint
+      SETPOINT = SETPOINT + 1.0;
+      ultimoTiempoInc = tiempoActual;
+    }
+  }
+  if (banderaDec){
+    banderaDec = false;
+    if(tiempoActual - ultimoTiempoDec >= TIEMPO_ANTIRREBOTE){ //Si ocurre la interrupcion y el tiempo actual - el tiempo del incremento es mayor a 200 ms, quiere decir que pasaron los rebotes de los pines, se aumenta seatpoint
+      SETPOINT = SETPOINT - 1.0;
+      ultimoTiempoDec = tiempoActual;
+    }
+  }
+}
+
+void setup() {
+  pinMode(PIN_PUERTA, INPUT);
+  pinMode(PIN_SENSOR, INPUT);
+  pinMode(PIN_INC,INPUT_PULLUP);
+  pinMode(PIN_DEC,INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PIN_INC),interrupcionIncrementar,FALLING); //Inicializar interrupciones
+  attachInterrupt(digitalPinToInterrupt(PIN_DEC),interrupcionDecrementar,FALLING); //Inicializar interrupciones
+  Wire.begin(I2C_SDA, I2C_SCL);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+ 
+  display.print("Iniciando");
+  display.display();
+  delay(1000);
+}
+
+void loop() {
+  unsigned long tiempoActual = millis();
+  if (tiempoActual-tiempoAnterior >= INTERVALO_ACTUALIZACION) {
+    tiempoAnterior = tiempoActual;
+    temperaturaActual = leerTemperatura();
+    estadoPuertaActual= digitalRead(PIN_PUERTA);
+    actualizarPantalla();
+  }
+  //temperaturaActual = leerTemperatura(); //No es necesario volver a declarar la variable proque globalmente ya es float
+  /*int lecturaADC = analogRead(PIN_SENSOR);
+  float voltajeSensor = convertirADCAVoltaje(lecturaADC);
+  float temperatura = convertirATemperatura(voltajeSensor);
+  */
+  //float voltajeSensor = lecturaADC*3.3/4095.0;
+  //float temperatura=(voltajeSensor-0.8)/0.05;
+  //estadoPuertaActual= digitalRead(PIN_PUERTA);
+  /*//display.clearDisplay();
+  //display.setTextSize(1);
+  //display.setTextColor(SSD1306_WHITE);
+  //Primera fila
+  //display.setCursor(0, 0);
+  //display.print("Temp: ");
+  //display.print(temperatura, 1);
+  //display.print(" C");
+  //Segunda fila
+  //display.setCursor(0,12);
+  //display.print("Setpoint: ");
+  //display.print(SETPOINT,1);
+  //display.print("C");
+  
+  //tercera fila
+  display.setCursor(0, 24);
+  if (estadoPuerta){
+    display.print("Puerta Abierta");
+   }
+   else{
+    display.print("Puerta Cerrada");
+   
+   }
+  display.display();*/
+  //actualizarPantalla();
+  /*unsigned long tiempoActual  = millis(); //numero de 32 bits =unsigned long //Tiempo que ha transcurrido desde que prendieron el microcontrolador
+  if (banderaInc){
+    if(tiempoActual - ultimoTiempoInc >= TIEMPO_ANTIRREBOTE){ //Si ocurre la interrupcion y el tiempo actual - el tiempo del incremento es mayor a 200 ms, quiere decir que pasaron los rebotes de los pines, se aumenta seatpoint
+      SETPOINT = SETPOINT + 1.0;
+      banderaInc = false;
+    }
+  }
+  if (banderaDec){
+    if(tiempoActual - ultimoTiempoInc >= TIEMPO_ANTIRREBOTE){ //Si ocurre la interrupcion y el tiempo actual - el tiempo del incremento es mayor a 200 ms, quiere decir que pasaron los rebotes de los pines, se aumenta seatpoint
+      SETPOINT = SETPOINT - 1.0;
+      banderaDec = false;
+    }
+  } */                 
+  atenderBotones();
+//delay(1000);
+
+}
