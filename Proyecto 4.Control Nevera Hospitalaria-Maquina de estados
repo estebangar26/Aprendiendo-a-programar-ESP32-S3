@@ -1,1 +1,236 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
+// Pines I2C para la pantalla OLED
+const int I2C_SDA = 8;
+const int I2C_SCL = 9;
+
+const int PIN_PUERTA = 15;
+const int PIN_SENSOR = 7;
+
+const int PIN_COMPRESOR = 10;
+const int PIN_BUZZER = 13;
+
+const int PIN_INC = 6;
+const int PIN_DEC = 5;
+
+float SETPOINT = 4.0;
+
+unsigned long tiempoAnterior = 0;                         
+const unsigned long INTERVALO_ACTUALIZACION = 1000;   
+
+unsigned long tiempoInicioPuertaAbierta = 0;
+const unsigned long TIEMPO_ALARMA_PUERTA = 30000; //30000 ms porque son 30 s si la puerta permanece abierta
+
+bool temporizadorPuertaActivo =  false; //contar tiempo de la alarma? Para que solo cuente el tiempo de 30 s cuando la puerta esta abierta
+float temperaturaActual = 4.0;
+int estadoPuertaActual=1; // inicialmente puerta abierta
+
+// Variables para antirrebote
+const unsigned long TIEMPO_ANTIRREBOTE = 200;             
+unsigned long ultimoTiempoInc = 0;                        
+unsigned long ultimoTiempoDec = 0;                        
+
+volatile bool banderaInc = false;                         
+volatile bool banderaDec = false;                         
+
+// Configuración de pantalla OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+enum EstadoSistema {
+   /*Variable de estado del sistema
+   Segun el enunciado este sistema puede estar en tres estados: con la puerta abierta dentro el rango (30s),puerta cerrada o puerta abierta mas de 30s*/
+   ARRANQUE,
+   CONTROL_TEMPERATURA,
+   ALARMA
+};
+EstadoSistema estadoActual = ARRANQUE;
+
+void IRAM_ATTR interrupcionIncrementar() {
+  banderaInc = true;
+}
+
+void IRAM_ATTR interrupcionDecrementar() {
+  banderaDec = true;
+}
+
+float convertirADCAVoltaje(int lecturaADC) {
+  float voltaje = lecturaADC*3.3/4095.0;
+  return voltaje;
+}
+
+float convertirATemperatura(float volt) {
+  float temp=(volt-0.8)/0.05;
+  return temp;
+}
+
+float leerTemperatura() {
+  int lecturaADC = analogRead(PIN_SENSOR);
+  float voltajeSensor = convertirADCAVoltaje(lecturaADC);
+  float temperatura = convertirATemperatura(voltajeSensor);
+  return  temperatura;
+}
+
+void actualizarPantalla() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  //Primera fila
+  display.setCursor(0, 0);
+  display.print("Temp: ");
+  display.print(temperaturaActual, 1);
+  display.print(" C");
+  //Segunda fila
+  display.setCursor(0, 12);
+  display.print("Setpoint: ");
+  display.print(SETPOINT, 1);
+  display.print(" C");
+  //tercera fila
+  display.setCursor(0, 24);
+  if (estadoPuertaActual){
+    display.print("Puerta Abierta");
+   }
+   else{
+    display.print("Puerta Cerrada");
+    
+   }
+  display.display();
+}
+
+void atenderBotones() {      
+  estadoPuertaActual=digitalRead(PIN_PUERTA);                             
+  unsigned long tiempoActual = millis();                  
+
+  if (banderaInc) {                                       
+    banderaInc = false;                                   
+
+    if (tiempoActual - ultimoTiempoInc >= TIEMPO_ANTIRREBOTE) {  
+      SETPOINT = SETPOINT + 1.0;                          
+      ultimoTiempoInc = tiempoActual;                     
+    }                                                     
+  }                                                       
+
+  if (banderaDec) {                                       
+    banderaDec = false;                                   
+    if (tiempoActual - ultimoTiempoDec >= TIEMPO_ANTIRREBOTE) {  
+      SETPOINT = SETPOINT - 1.0;                          
+      ultimoTiempoDec = tiempoActual;                     
+    }                                                     
+  }                                                       
+}
+
+//Funciones para manejar el compresor
+void encenderCompresor(){
+  digitalWrite(PIN_COMPRESOR,HIGH); //Para manejar el apagado del compresor segun la temperatura del setpoint
+}
+
+void apagarCompresor(){
+  digitalWrite(PIN_COMPRESOR,LOW);
+}
+
+//Funciones para controlar el buzzer
+void encenderBuzzer(){
+  digitalWrite(PIN_BUZZER,HIGH);  //Para manejar el encendido o apagado del buzzer segun la temperatura del setpoint
+}
+
+void apagarBuzzer(){
+  digitalWrite(PIN_BUZZER,LOW);  //Para manejar el encendido o apagado del buzzer segun la temperatura del setpoint
+}
+
+
+void actualizarMaquinaEstados() {
+  estadoPuertaActual=digitalRead(PIN_PUERTA);
+  switch(estadoActual){
+    case ARRANQUE:
+    apagarCompresor();
+    apagarBuzzer();
+    //digitalWrite(PIN_COMPRESOR,LOW); //Para manejar el apagado del compresor segun la temperatura del setpoint
+    //digitalWrite(PIN_BUZZER,LOW);  ///Para manejar el encendido o apagado del buzzer segun la temperatura del setpoint
+      if (!estadoPuertaActual){
+        estadoActual = CONTROL_TEMPERATURA;
+    }
+
+    break;
+    case CONTROL_TEMPERATURA:
+    if (temperaturaActual > SETPOINT){
+      encenderCompresor();
+      //Serial.print("Si el programa pasa por aca compresor ON"); /*Como el programpa asa por aca no es un error de lógica, 
+      //sino que en el setup no se indicaron como salidas lógicas los pines del buzzer y el comresor*/
+    }
+    else if (temperaturaActual < SETPOINT){
+      apagarCompresor();
+    }
+
+    if (estadoPuertaActual){ //Si la puerta esta abierta ingresa al codigo
+      if (!temporizadorPuertaActivo) { //Si el temporizador no esta activo(por defecto no esta activo),ingresa a este bloque de codigo
+        tiempoInicioPuertaAbierta = millis();
+        temporizadorPuertaActivo = true;
+      }
+
+      /*Se verifica que el tiempo transcurrido no haya sido mayor a 30000 ms, si esto pasa se activa la alarma*/
+      if (millis() - tiempoInicioPuertaAbierta >=  TIEMPO_ALARMA_PUERTA){
+        estadoActual = ALARMA;
+      }
+    }
+    else { //Si la puerta esta cerrada, no iniciar el temporizador
+
+        temporizadorPuertaActivo = false;
+      
+    }
+    break;
+    case ALARMA: //La alarma estará encendida hasta aque alguien cierre la puerta.
+      encenderBuzzer();
+      //Se verifica si la puerta esta cerrada, si lo esta debería cambiar al estadod e control de temperatura y se apaga el buzzer
+      if ((!estadoPuertaActual)){
+        apagarBuzzer();
+        temporizadorPuertaActivo = false;
+        estadoActual = CONTROL_TEMPERATURA;
+
+      }
+    break;
+
+  }
+  
+}
+
+void setup() {
+  pinMode(PIN_PUERTA, INPUT);
+  pinMode(PIN_SENSOR, INPUT);
+  pinMode(PIN_INC, INPUT_PULLUP);
+  pinMode(PIN_DEC, INPUT_PULLUP);
+  pinMode(PIN_COMPRESOR, OUTPUT);
+  pinMode(PIN_BUZZER,OUTPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_INC), interrupcionIncrementar, FALLING);
+  attachInterrupt(digitalPinToInterrupt(PIN_DEC), interrupcionDecrementar, FALLING);
+  Wire.begin(I2C_SDA, I2C_SCL);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  
+  display.print("Iniciando");
+  display.display();
+  delay(1000);
+  Serial.begin(115200); //Vamos a depurar un error no de sintaxis, sino de lógica inicializando el serial
+}
+
+void loop() {
+  unsigned long tiempoActual = millis();                 
+
+  if (tiempoActual - tiempoAnterior >= INTERVALO_ACTUALIZACION) { 
+    tiempoAnterior = tiempoActual;
+    temperaturaActual = leerTemperatura();
+    //estadoPuertaActual=digitalRead(PIN_PUERTA);
+    actualizarPantalla();
+  }
+  actualizarMaquinaEstados();
+  atenderBotones(); 
+}
+
+/*El Buzzer no se puede poner a sonar con un tono sencillo, entonces se cambia por otro led*/
